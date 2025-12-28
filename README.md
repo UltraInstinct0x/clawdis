@@ -52,32 +52,34 @@ Your surfaces
 - **Bridge** (optional) exposes a paired-node port for iOS/Android.
 - **Agent runtime** is **Pi** in RPC mode.
 
-## Quick start (from source)
+## Quick start
 
-Runtime: **Node ≥22** + **pnpm**.
+**Get started in 5 minutes** → [**GETTING_STARTED.md**](docs/GETTING_STARTED.md)
 
 ```bash
-pnpm install
-pnpm build
-pnpm ui:build
+# Install
+git clone https://github.com/steipete/clawdis.git
+cd clawdis
+pnpm install && pnpm build
 
-# Link WhatsApp (stores creds in ~/.clawdis/credentials)
+# Link WhatsApp
 pnpm clawdis login
 
-# Start the gateway
-pnpm clawdis gateway --port 18789 --verbose
+# Start gateway
+pnpm clawdis gateway --port 18789
 
-# Dev loop (auto-reload on TS changes)
-pnpm gateway:watch
-
-# Send a message
-pnpm clawdis send --to +1234567890 --message "Hello from Clawdis"
-
-# Talk to the assistant (optionally deliver back to WhatsApp/Telegram/Discord)
-pnpm clawdis agent --message "Ship checklist" --thinking high
+# Talk to your assistant
+pnpm clawdis agent --message "Hello!" --thinking low
 ```
 
 If you run from source, prefer `pnpm clawdis …` (not global `clawdis`).
+
+**Deployment options**:
+- 🏠 **Local** (Mac/Linux) - Full control, zero cost
+- ☁️ **Cloud** (Oracle/AWS/GCP) - 24/7 availability, from $0/month
+- 📱 **Headless** - Mobile-first, access anywhere
+
+See [**DEPLOYMENT_PATTERNS.md**](docs/DEPLOYMENT_PATTERNS.md) to choose the right architecture for your needs.
 
 ## Chat commands
 
@@ -195,29 +197,37 @@ Browser control (optional):
 }
 ```
 
-## Docs
+## Documentation
 
-- [`docs/index.md`](docs/index.md) (overview)
-- [`docs/configuration.md`](docs/configuration.md)
-- [`docs/group-messages.md`](docs/group-messages.md)
-- [`docs/gateway.md`](docs/gateway.md)
-- [`docs/web.md`](docs/web.md)
-- [`docs/discovery.md`](docs/discovery.md)
-- [`docs/agent.md`](docs/agent.md)
-- [`docs/discord.md`](docs/discord.md)
-- Webhooks + external triggers: [`docs/webhook.md`](docs/webhook.md)
-- Gmail hooks (email → wake): [`docs/gmail-pubsub.md`](docs/gmail-pubsub.md)
+### Getting Started
+- 🚀 [**Getting Started**](docs/GETTING_STARTED.md) - 5-minute quick start guide
+- ☁️ [**Cloud Deployment**](docs/CLOUD_DEPLOYMENT.md) - Deploy to Oracle Cloud, AWS, or GCP
+- 🏗️ [**Deployment Patterns**](docs/DEPLOYMENT_PATTERNS.md) - Choose the right architecture
 
-## Email hooks (Gmail)
+### Configuration & Setup
+- [Configuration Reference](docs/configuration.md) - All config options
+- [Gateway](docs/gateway.md) - Gateway daemon operations
+- [Agent Runtime](docs/agent.md) - Agent workspace and skills
+- [Security](docs/security.md) - Security best practices
 
-```bash
-clawdis hooks gmail setup --account you@gmail.com
-clawdis hooks gmail run
-```
-- [`docs/security.md`](docs/security.md)
-- [`docs/troubleshooting.md`](docs/troubleshooting.md)
-- [`docs/ios/connect.md`](docs/ios/connect.md)
-- [`docs/clawdis-mac.md`](docs/clawdis-mac.md)
+### Surfaces & Integration
+- [WhatsApp](docs/whatsapp.md) - WhatsApp setup and troubleshooting
+- [Telegram](docs/telegram.md) - Telegram bot configuration
+- [Discord](docs/discord.md) - Discord bot setup
+- [WebChat](docs/webchat.md) - Built-in web interface
+- [Webhooks](docs/webhook.md) - External triggers
+- [Gmail Hooks](docs/gmail-pubsub.md) - Email → wake integration
+
+### Platform Guides
+- [macOS App](docs/clawdis-mac.md) - Native menubar app
+- [iOS Connect](docs/ios/connect.md) - iOS node pairing
+- [Remote Access](docs/remote.md) - SSH tunnels and Tailscale
+- [Tailscale](docs/tailscale.md) - Integrated Tailscale Serve/Funnel
+
+### Reference
+- [Architecture](docs/architecture.md) - System design
+- [Troubleshooting](docs/troubleshooting.md) - Common issues
+- [Full Index](docs/index.md) - All documentation
 
 ## Clawd
 
