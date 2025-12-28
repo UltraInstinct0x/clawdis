@@ -24,6 +24,24 @@ describe("doctorCommand", () => {
     vi.resetAllMocks();
   });
 
+  describe("fix option", () => {
+    it("should accept fix option without crashing", async () => {
+      // Just verify it doesn't throw - actual fix behavior requires TTY
+      await doctorCommand({ fix: false }, mockRuntime);
+      expect(logs.length).toBeGreaterThan(0);
+    });
+
+    it("should suggest --fix when errors exist", async () => {
+      await doctorCommand({}, mockRuntime);
+
+      const output = logs.join("\n");
+      // Should suggest --fix if there are errors
+      if (output.includes("errors")) {
+        expect(output).toContain("--fix");
+      }
+    });
+  });
+
   describe("default output", () => {
     it("should run without crashing", async () => {
       await doctorCommand({}, mockRuntime);

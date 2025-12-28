@@ -39,6 +39,31 @@ describe("prerequisites", () => {
     });
   });
 
+  describe("fixable issues", () => {
+    it("should include fixId for fixable issues", async () => {
+      const report = await runAllPrerequisiteChecks();
+
+      // Check that results with warnings/errors have fixId where applicable
+      for (const result of report.results) {
+        if (result.name === "Clawdis Config" && result.status === "warning") {
+          expect(result.fixId).toBe("setup-config");
+        }
+        if (result.name === "Agent Workspace" && result.status === "warning") {
+          expect(result.fixId).toBe("setup-workspace");
+        }
+        if (
+          result.name === "WhatsApp Credentials" &&
+          result.status === "warning"
+        ) {
+          expect(result.fixId).toBe("whatsapp-login");
+        }
+        if (result.name === "Anthropic API Key" && result.status === "error") {
+          expect(result.fixId).toBe("anthropic-key");
+        }
+      }
+    });
+  });
+
   describe("runAllPrerequisiteChecks", () => {
     it("should return results for all checks", async () => {
       const report = await runAllPrerequisiteChecks();

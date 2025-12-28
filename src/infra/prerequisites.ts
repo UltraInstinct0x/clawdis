@@ -20,7 +20,16 @@ export interface PrerequisiteResult {
   required?: string;
   message: string;
   hint?: string;
+  /** If set, this issue can be auto-fixed by calling the corresponding fix function */
+  fixId?: FixableIssue;
 }
+
+/** Identifiers for issues that can be auto-fixed */
+export type FixableIssue =
+  | "setup-config"
+  | "setup-workspace"
+  | "whatsapp-login"
+  | "anthropic-key";
 
 export interface PrerequisiteCheck {
   name: string;
@@ -112,6 +121,7 @@ async function checkWhatsAppCredentials(): Promise<PrerequisiteResult> {
       status: "warning",
       message: "Credentials file exists but is empty",
       hint: "Run: clawdis login",
+      fixId: "whatsapp-login",
     };
   } catch {
     return {
@@ -119,6 +129,7 @@ async function checkWhatsAppCredentials(): Promise<PrerequisiteResult> {
       status: "warning",
       message: "No WhatsApp credentials found",
       hint: "Run: clawdis login (scan QR code with your phone)",
+      fixId: "whatsapp-login",
     };
   }
 }
@@ -212,6 +223,7 @@ async function checkAnthropicKey(): Promise<PrerequisiteResult> {
     hint: hasAuth
       ? undefined
       : "Set ANTHROPIC_API_KEY env var or configure OAuth in settings",
+    fixId: hasAuth ? undefined : "anthropic-key",
   };
 }
 
@@ -235,6 +247,7 @@ async function checkClawdisConfig(): Promise<PrerequisiteResult> {
       status: "warning",
       message: "Config file is not a regular file",
       hint: "Run: clawdis setup",
+      fixId: "setup-config",
     };
   } catch (err) {
     if ((err as NodeJS.ErrnoException).code === "ENOENT") {
@@ -243,6 +256,7 @@ async function checkClawdisConfig(): Promise<PrerequisiteResult> {
         status: "warning",
         message: "No config file found",
         hint: "Run: clawdis setup",
+        fixId: "setup-config",
       };
     }
     return {
@@ -273,6 +287,7 @@ async function checkWorkspace(): Promise<PrerequisiteResult> {
       status: "warning",
       message: "Workspace directory exists but AGENTS.md missing",
       hint: "Run: clawdis setup",
+      fixId: "setup-workspace",
     };
   } catch {
     return {
@@ -280,6 +295,7 @@ async function checkWorkspace(): Promise<PrerequisiteResult> {
       status: "warning",
       message: "No workspace directory found",
       hint: "Run: clawdis setup (creates ~/clawd with template files)",
+      fixId: "setup-workspace",
     };
   }
 }
