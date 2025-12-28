@@ -13,7 +13,7 @@ set -euo pipefail
 # Configuration
 # ─────────────────────────────────────────────────────────────────────────────
 
-CLAWDIS_REPO="https://github.com/steipete/clawdis.git"
+CLAWDIS_REPO="${CLAWDIS_REPO:-https://github.com/UltraInstinct0x/clawdis.git}"
 CLAWDIS_DIR="${CLAWDIS_DIR:-$HOME/clawdis}"
 MIN_NODE_VERSION=22
 INSTALL_DIR="${INSTALL_DIR:-$HOME/.local/bin}"
