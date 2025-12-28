@@ -366,7 +366,8 @@ export async function checkFfmpeg(): Promise<PrerequisiteCheckResult> {
  * Check if Tailscale is installed (optional for remote access).
  */
 export async function checkTailscale(): Promise<PrerequisiteCheckResult> {
-  const result = await checkCommand("tailscale");
+  // tailscale uses subcommand "version", not --version flag
+  const result = await checkCommand("tailscale", "version");
 
   if (!result.exists) {
     return {
