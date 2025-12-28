@@ -18,7 +18,14 @@ const execAsync = promisify(exec);
  */
 function getEnhancedPath(): string {
   const currentPath = process.env.PATH || "";
+
+  // Get the directory containing the current node binary
+  // This is crucial for finding globally installed npm packages (like pnpm)
+  // when using nvm/fnm, since they install to the same bin dir as node
+  const nodeBinDir = path.dirname(process.execPath);
+
   const extraPaths = [
+    nodeBinDir, // Include the current node's bin dir (for npm global packages)
     "/usr/local/bin",
     "/usr/bin",
     "/bin",
