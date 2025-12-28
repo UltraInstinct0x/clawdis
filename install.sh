@@ -18,6 +18,9 @@ CLAWDIS_DIR="${CLAWDIS_DIR:-$HOME/clawdis}"
 MIN_NODE_VERSION=22
 INSTALL_DIR="${INSTALL_DIR:-$HOME/.local/bin}"
 
+# Will be set to the absolute path of the node binary
+NODE_BIN=""
+
 # Colors
 RED='\033[0;31m'
 GREEN='\033[0;32m'
@@ -55,14 +58,10 @@ command_exists() {
   command -v "$1" >/dev/null 2>&1
 }
 
-version_gte() {
-  # Returns 0 if version $1 >= $2
-  printf '%s\n%s\n' "$2" "$1" | sort -V -C
-}
-
 get_node_major_version() {
-  if command_exists node; then
-    node -v | sed 's/v//' | cut -d. -f1
+  local node_cmd="${1:-node}"
+  if command_exists "$node_cmd"; then
+    "$node_cmd" -v 2>/dev/null | sed 's/v//' | cut -d. -f1
   else
     echo "0"
   fi
@@ -105,36 +104,32 @@ detect_package_manager() {
 # ─────────────────────────────────────────────────────────────────────────────
 
 install_node_nvm() {
-  log_info "Installing Node.js via nvm..."
+  log_info "Installing Node.js $MIN_NODE_VERSION via nvm..."
 
-  if [ ! -d "$HOME/.nvm" ]; then
+  export NVM_DIR="$HOME/.nvm"
+
+  if [ ! -d "$NVM_DIR" ]; then
     curl -o- https://raw.githubusercontent.com/nvm-sh/nvm/v0.40.1/install.sh | bash
   fi
 
   # Load nvm
-  export NVM_DIR="$HOME/.nvm"
   # shellcheck source=/dev/null
   [ -s "$NVM_DIR/nvm.sh" ] && \. "$NVM_DIR/nvm.sh"
 
   nvm install "$MIN_NODE_VERSION"
   nvm use "$MIN_NODE_VERSION"
+  nvm alias default "$MIN_NODE_VERSION"
 
-  log_success "Node.js $(node -v) installed via nvm"
-}
+  # Get the absolute path to the node binary
+  NODE_BIN="$NVM_DIR/versions/node/$(nvm current)/bin/node"
 
-install_node_fnm() {
-  log_info "Installing Node.js via fnm..."
-
-  if ! command_exists fnm; then
-    curl -fsSL https://fnm.vercel.app/install | bash
-    export PATH="$HOME/.local/share/fnm:$PATH"
-    eval "$(fnm env)"
+  if [ ! -x "$NODE_BIN" ]; then
+    # Fallback: find it
+    NODE_BIN=$(which node)
   fi
 
-  fnm install "$MIN_NODE_VERSION"
-  fnm use "$MIN_NODE_VERSION"
-
-  log_success "Node.js $(node -v) installed via fnm"
+  log_success "Node.js $(node -v) installed via nvm"
+  log_info "Node binary: $NODE_BIN"
 }
 
 install_node_brew() {
@@ -143,9 +138,10 @@ install_node_brew() {
 
   # Link if needed
   if ! command_exists node; then
-    brew link --overwrite node@22
+    brew link --overwrite node@22 2>/dev/null || true
   fi
 
+  NODE_BIN=$(which node)
   log_success "Node.js $(node -v) installed via Homebrew"
 }
 
@@ -155,24 +151,68 @@ install_node() {
 
   if [ "$os" = "macos" ] && command_exists brew; then
     install_node_brew
-  elif command_exists fnm; then
-    install_node_fnm
   else
     install_node_nvm
   fi
 }
 
+find_node_binary() {
+  # Try to find the best node binary
+
+  # 1. Check nvm
+  if [ -d "$HOME/.nvm" ]; then
+    export NVM_DIR="$HOME/.nvm"
+    # shellcheck source=/dev/null
+    [ -s "$NVM_DIR/nvm.sh" ] && \. "$NVM_DIR/nvm.sh"
+
+    local nvm_node
+    nvm_node="$NVM_DIR/versions/node/$(nvm current 2>/dev/null)/bin/node" 2>/dev/null || true
+    if [ -x "$nvm_node" ]; then
+      local ver
+      ver=$("$nvm_node" -v 2>/dev/null | sed 's/v//' | cut -d. -f1)
+      if [ "$ver" -ge "$MIN_NODE_VERSION" ]; then
+        NODE_BIN="$nvm_node"
+        return 0
+      fi
+    fi
+  fi
+
+  # 2. Check fnm
+  if [ -d "$HOME/.local/share/fnm" ]; then
+    export PATH="$HOME/.local/share/fnm:$PATH"
+    eval "$(fnm env 2>/dev/null)" 2>/dev/null || true
+  fi
+
+  # 3. Check regular node
+  if command_exists node; then
+    local ver
+    ver=$(get_node_major_version node)
+    if [ "$ver" -ge "$MIN_NODE_VERSION" ]; then
+      NODE_BIN=$(which node)
+      return 0
+    fi
+  fi
+
+  return 1
+}
+
 install_pnpm() {
   log_info "Installing pnpm..."
 
-  if command_exists corepack; then
-    corepack enable
-    corepack prepare pnpm@latest --activate
+  # Use the correct node
+  if [ -n "$NODE_BIN" ]; then
+    local npm_bin
+    npm_bin="$(dirname "$NODE_BIN")/npm"
+    if [ -x "$npm_bin" ]; then
+      "$npm_bin" install -g pnpm
+    else
+      npm install -g pnpm
+    fi
   else
     npm install -g pnpm
   fi
 
-  log_success "pnpm $(pnpm --version) installed"
+  log_success "pnpm installed"
 }
 
 install_git() {
@@ -193,14 +233,39 @@ install_git() {
   log_success "Git installed"
 }
 
+install_ffmpeg() {
+  local pm
+  pm=$(detect_package_manager)
+  local os
+  os=$(detect_os)
+
+  log_info "Installing FFmpeg (for audio/video processing)..."
+
+  case "$pm" in
+    apt) sudo apt-get update && sudo apt-get install -y ffmpeg ;;
+    dnf) sudo dnf install -y ffmpeg ;;
+    yum) sudo yum install -y ffmpeg ;;
+    pacman) sudo pacman -S --noconfirm ffmpeg ;;
+    brew) brew install ffmpeg ;;
+    *)
+      log_warn "Cannot install ffmpeg automatically."
+      log_info "Please install manually for audio/video support."
+      return 0
+      ;;
+  esac
+
+  log_success "FFmpeg installed"
+}
+
 clone_or_update_repo() {
   if [ -d "$CLAWDIS_DIR/.git" ]; then
     log_info "Updating existing clawdis installation..."
     cd "$CLAWDIS_DIR"
     git fetch origin
-    git pull --rebase origin main
+    git reset --hard origin/main
   else
     log_info "Cloning clawdis repository..."
+    rm -rf "$CLAWDIS_DIR"
     git clone "$CLAWDIS_REPO" "$CLAWDIS_DIR"
     cd "$CLAWDIS_DIR"
   fi
@@ -209,11 +274,23 @@ clone_or_update_repo() {
 }
 
 build_clawdis() {
+  cd "$CLAWDIS_DIR"
+
+  # Find pnpm - might be in nvm bin dir
+  local pnpm_bin="pnpm"
+  if [ -n "$NODE_BIN" ]; then
+    local maybe_pnpm
+    maybe_pnpm="$(dirname "$NODE_BIN")/pnpm"
+    if [ -x "$maybe_pnpm" ]; then
+      pnpm_bin="$maybe_pnpm"
+    fi
+  fi
+
   log_info "Installing dependencies..."
-  pnpm install
+  "$pnpm_bin" install
 
   log_info "Building clawdis..."
-  pnpm build
+  "$pnpm_bin" build
 
   log_success "Build complete"
 }
@@ -223,22 +300,43 @@ setup_symlink() {
 
   mkdir -p "$INSTALL_DIR"
 
-  # Create wrapper script
+  # Create wrapper script with ABSOLUTE path to node
   local wrapper="$INSTALL_DIR/clawdis"
   cat > "$wrapper" << EOF
 #!/usr/bin/env bash
-exec node "$CLAWDIS_DIR/dist/index.js" "\$@"
+exec "$NODE_BIN" "$CLAWDIS_DIR/dist/index.js" "\$@"
 EOF
   chmod +x "$wrapper"
 
-  # Check if INSTALL_DIR is in PATH
-  if [[ ":$PATH:" != *":$INSTALL_DIR:"* ]]; then
-    log_warn "$INSTALL_DIR is not in your PATH"
-    log_info "Add this to your shell profile (~/.bashrc, ~/.zshrc, etc.):"
-    echo -e "  ${CYAN}export PATH=\"\$PATH:$INSTALL_DIR\"${NC}"
-  fi
-
   log_success "clawdis command installed at $wrapper"
+  log_info "Using node: $NODE_BIN"
+}
+
+setup_path() {
+  # Add to PATH if not already there
+  if [[ ":$PATH:" != *":$INSTALL_DIR:"* ]]; then
+    # Detect shell config file
+    local shell_rc=""
+    if [ -n "${ZSH_VERSION:-}" ] || [ -f "$HOME/.zshrc" ]; then
+      shell_rc="$HOME/.zshrc"
+    elif [ -f "$HOME/.bashrc" ]; then
+      shell_rc="$HOME/.bashrc"
+    elif [ -f "$HOME/.bash_profile" ]; then
+      shell_rc="$HOME/.bash_profile"
+    fi
+
+    if [ -n "$shell_rc" ]; then
+      if ! grep -q "$INSTALL_DIR" "$shell_rc" 2>/dev/null; then
+        echo "" >> "$shell_rc"
+        echo "# Clawdis" >> "$shell_rc"
+        echo "export PATH=\"\$PATH:$INSTALL_DIR\"" >> "$shell_rc"
+        log_success "Added $INSTALL_DIR to PATH in $shell_rc"
+      fi
+    fi
+
+    # Also export for current session
+    export PATH="$PATH:$INSTALL_DIR"
+  fi
 }
 
 run_setup() {
@@ -246,8 +344,17 @@ run_setup() {
 
   cd "$CLAWDIS_DIR"
 
-  # Use tsx to run setup directly
-  npx tsx src/index.ts setup
+  # Run setup using our node and pnpm
+  local pnpm_bin="pnpm"
+  if [ -n "$NODE_BIN" ]; then
+    local maybe_pnpm
+    maybe_pnpm="$(dirname "$NODE_BIN")/pnpm"
+    if [ -x "$maybe_pnpm" ]; then
+      pnpm_bin="$maybe_pnpm"
+    fi
+  fi
+
+  "$pnpm_bin" clawdis setup --quick
 
   log_success "Initial setup complete"
 }
@@ -290,17 +397,18 @@ main() {
   # Step 2: Check/Install Node.js
   # ─────────────────────────────────────────────────────────────────────────
 
-  log_step "Checking Node.js..."
+  log_step "Checking Node.js >= $MIN_NODE_VERSION..."
 
-  node_version=$(get_node_major_version)
-
-  if [ "$node_version" -ge "$MIN_NODE_VERSION" ]; then
-    log_success "Node.js v$(node -v | sed 's/v//') found (>= $MIN_NODE_VERSION required)"
+  if find_node_binary; then
+    log_success "Node.js $($NODE_BIN -v) found at $NODE_BIN"
   else
-    if [ "$node_version" -gt 0 ]; then
-      log_warn "Node.js v$(node -v | sed 's/v//') is too old (>= $MIN_NODE_VERSION required)"
-    fi
     install_node
+  fi
+
+  # Verify we have a valid node
+  if [ -z "$NODE_BIN" ] || [ ! -x "$NODE_BIN" ]; then
+    log_error "Failed to find or install Node.js $MIN_NODE_VERSION+"
+    exit 1
   fi
 
   # ─────────────────────────────────────────────────────────────────────────
@@ -309,14 +417,30 @@ main() {
 
   log_step "Checking pnpm..."
 
-  if command_exists pnpm; then
+  # Check if pnpm exists in the node bin directory
+  local pnpm_bin="$(dirname "$NODE_BIN")/pnpm"
+  if [ -x "$pnpm_bin" ]; then
+    log_success "pnpm found at $pnpm_bin"
+  elif command_exists pnpm; then
     log_success "pnpm $(pnpm --version) found"
   else
     install_pnpm
   fi
 
   # ─────────────────────────────────────────────────────────────────────────
-  # Step 4: Clone/Update Repository
+  # Step 4: Install FFmpeg (optional but recommended)
+  # ─────────────────────────────────────────────────────────────────────────
+
+  log_step "Checking FFmpeg..."
+
+  if command_exists ffmpeg; then
+    log_success "FFmpeg found"
+  else
+    install_ffmpeg || true
+  fi
+
+  # ─────────────────────────────────────────────────────────────────────────
+  # Step 5: Clone/Update Repository
   # ─────────────────────────────────────────────────────────────────────────
 
   log_step "Setting up clawdis repository..."
@@ -324,7 +448,7 @@ main() {
   clone_or_update_repo
 
   # ─────────────────────────────────────────────────────────────────────────
-  # Step 5: Build
+  # Step 6: Build
   # ─────────────────────────────────────────────────────────────────────────
 
   log_step "Building clawdis..."
@@ -332,15 +456,16 @@ main() {
   build_clawdis
 
   # ─────────────────────────────────────────────────────────────────────────
-  # Step 6: Create symlink
+  # Step 7: Create launcher with absolute node path
   # ─────────────────────────────────────────────────────────────────────────
 
   log_step "Installing clawdis command..."
 
   setup_symlink
+  setup_path
 
   # ─────────────────────────────────────────────────────────────────────────
-  # Step 7: Run setup
+  # Step 8: Run setup
   # ─────────────────────────────────────────────────────────────────────────
 
   log_step "Running initial setup..."
@@ -358,18 +483,21 @@ main() {
   echo ""
   echo -e "  ${BOLD}Next steps:${NC}"
   echo ""
-  echo -e "  1. ${CYAN}clawdis login${NC}        # Link your WhatsApp (scan QR code)"
-  echo -e "  2. ${CYAN}clawdis doctor${NC}       # Check system health"
+  echo -e "  1. ${CYAN}clawdis doctor${NC}       # Check system health"
+  echo -e "  2. ${CYAN}clawdis login${NC}        # Link WhatsApp (optional)"
   echo -e "  3. ${CYAN}clawdis gateway${NC}      # Start the gateway server"
   echo ""
+  echo -e "  For Discord: Add botToken to ~/.clawdis/clawdis.json"
   echo -e "  For help: ${CYAN}clawdis --help${NC}"
   echo ""
 
-  # Remind about PATH if needed
-  if [[ ":$PATH:" != *":$INSTALL_DIR:"* ]]; then
-    echo -e "${YELLOW}  Note: Restart your shell or run:${NC}"
-    echo -e "  ${CYAN}export PATH=\"\$PATH:$INSTALL_DIR\"${NC}"
-    echo ""
+  # Test the installation
+  log_step "Verifying installation..."
+  if "$INSTALL_DIR/clawdis" --version >/dev/null 2>&1; then
+    log_success "clawdis is working!"
+  else
+    log_warn "clawdis command may need a shell restart"
+    log_info "Try: source ~/.bashrc && clawdis doctor"
   fi
 }
 
