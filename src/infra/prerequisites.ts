@@ -20,27 +20,40 @@ function getEnhancedPath(): string {
   const currentPath = process.env.PATH || "";
 
   // Get the directory containing the current node binary
-  // This is crucial for finding globally installed npm packages (like pnpm)
-  // when using nvm/fnm, since they install to the same bin dir as node
+  // This MUST come first so that scripts with #!/usr/bin/env node
+  // find the correct node (not system node)
   const nodeBinDir = path.dirname(process.execPath);
 
-  const extraPaths = [
-    nodeBinDir, // Include the current node's bin dir (for npm global packages)
+  // Priority paths that should come BEFORE system PATH
+  const priorityPaths = [
+    nodeBinDir, // MUST be first for correct node resolution
+    "/opt/homebrew/bin", // macOS Homebrew ARM
     "/usr/local/bin",
+  ];
+
+  // Additional paths to append after system PATH
+  const extraPaths = [
     "/usr/bin",
     "/bin",
     "/usr/sbin",
     "/sbin",
     "/snap/bin", // Ubuntu snap packages (tailscale)
-    "/opt/homebrew/bin", // macOS Homebrew ARM
     "/usr/local/opt/bin", // macOS Homebrew Intel
     `${os.homedir()}/.local/bin`,
     `${os.homedir()}/bin`,
   ];
 
-  // Combine current PATH with extra paths, avoiding duplicates
-  const allPaths = new Set(currentPath.split(":").concat(extraPaths));
-  return Array.from(allPaths).filter(Boolean).join(":");
+  // Priority paths first, then current PATH, then extra paths
+  const allPaths = [...priorityPaths, ...currentPath.split(":"), ...extraPaths];
+  // Remove duplicates while preserving order
+  const seen = new Set<string>();
+  return allPaths
+    .filter((p) => {
+      if (!p || seen.has(p)) return false;
+      seen.add(p);
+      return true;
+    })
+    .join(":");
 }
 
 /** Status of a prerequisite check */
@@ -325,7 +338,8 @@ export async function checkWorkspace(
  * Check if ffmpeg is installed (required for media processing).
  */
 export async function checkFfmpeg(): Promise<PrerequisiteCheckResult> {
-  const result = await checkCommand("ffmpeg");
+  // ffmpeg uses -version (single dash), not --version
+  const result = await checkCommand("ffmpeg", "-version");
 
   if (!result.exists) {
     return {
