@@ -11,6 +11,31 @@ import { promisify } from "node:util";
 
 const execAsync = promisify(exec);
 
+/**
+ * Build a comprehensive PATH for subprocess execution.
+ * This ensures we can find binaries even when running from a minimal environment
+ * (e.g., when launched via a wrapper script without shell initialization).
+ */
+function getEnhancedPath(): string {
+  const currentPath = process.env.PATH || "";
+  const extraPaths = [
+    "/usr/local/bin",
+    "/usr/bin",
+    "/bin",
+    "/usr/sbin",
+    "/sbin",
+    "/snap/bin", // Ubuntu snap packages (tailscale)
+    "/opt/homebrew/bin", // macOS Homebrew ARM
+    "/usr/local/opt/bin", // macOS Homebrew Intel
+    `${os.homedir()}/.local/bin`,
+    `${os.homedir()}/bin`,
+  ];
+
+  // Combine current PATH with extra paths, avoiding duplicates
+  const allPaths = new Set(currentPath.split(":").concat(extraPaths));
+  return Array.from(allPaths).filter(Boolean).join(":");
+}
+
 /** Status of a prerequisite check */
 export type PrerequisiteStatus = "ok" | "warning" | "error" | "skipped";
 
@@ -60,6 +85,7 @@ async function checkCommand(
   try {
     const { stdout, stderr } = await execAsync(`${command} ${versionFlag}`, {
       timeout: 10000,
+      env: { ...process.env, PATH: getEnhancedPath() },
     });
     const output = stdout || stderr;
     // Extract version from output (usually first line)
@@ -78,24 +104,17 @@ async function checkCommand(
 
 /**
  * Check if Node.js is installed and meets minimum version.
+ * Uses process.version to check the actual running Node.js, not a subprocess.
  */
 export async function checkNode(
   minVersion = "18.0.0",
 ): Promise<PrerequisiteCheckResult> {
-  const result = await checkCommand("node");
+  // Use process.version directly instead of spawning a subprocess.
+  // This ensures we check the node that's actually running clawdis,
+  // not whatever 'node' is found in PATH (which may be system node).
+  const version = process.version.replace(/^v/, "");
 
-  if (!result.exists) {
-    return {
-      id: "node",
-      name: "Node.js",
-      status: "error",
-      message: "Node.js is not installed or not in PATH",
-      required: true,
-      fix: "Install Node.js 18+ from https://nodejs.org or via nvm",
-    };
-  }
-
-  const currentParts = (result.version ?? "0.0.0").split(".").map(Number);
+  const currentParts = version.split(".").map(Number);
   const minParts = minVersion.split(".").map(Number);
 
   let meetsMin = true;
@@ -114,8 +133,8 @@ export async function checkNode(
       id: "node",
       name: "Node.js",
       status: "warning",
-      message: `Node.js ${result.version} is below recommended ${minVersion}`,
-      version: result.version,
+      message: `Node.js ${version} is below recommended ${minVersion}`,
+      version,
       required: true,
       fix: `Upgrade Node.js to ${minVersion}+`,
     };
@@ -125,8 +144,8 @@ export async function checkNode(
     id: "node",
     name: "Node.js",
     status: "ok",
-    message: `Node.js ${result.version} installed`,
-    version: result.version,
+    message: `Node.js ${version} installed`,
+    version,
     required: true,
   };
 }
