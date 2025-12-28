@@ -1,9 +1,10 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 import {
-  PREREQUISITE_CHECKS,
+  checkGit,
+  checkNode,
+  checkPnpm,
   runAllPrerequisiteChecks,
-  runRequiredPrerequisiteChecks,
 } from "./prerequisites.js";
 
 describe("prerequisites", () => {
@@ -11,137 +12,112 @@ describe("prerequisites", () => {
     vi.resetAllMocks();
   });
 
-  describe("PREREQUISITE_CHECKS", () => {
-    it("should have checks for all required categories", () => {
-      const categories = new Set(PREREQUISITE_CHECKS.map((c) => c.category));
-      expect(categories).toContain("runtime");
-      expect(categories).toContain("tools");
-      expect(categories).toContain("credentials");
-      expect(categories).toContain("network");
-    });
-
-    it("should have required checks for Node.js and Anthropic API key", () => {
-      const required = PREREQUISITE_CHECKS.filter((c) => c.required);
-      const names = required.map((c) => c.name);
-      expect(names).toContain("Node.js");
-      expect(names).toContain("pnpm");
-      expect(names).toContain("Anthropic API Key");
-      expect(names).toContain("Network Connectivity");
-    });
-
-    it("should have optional checks for providers", () => {
-      const optional = PREREQUISITE_CHECKS.filter((c) => !c.required);
-      const names = optional.map((c) => c.name);
-      expect(names).toContain("WhatsApp Credentials");
-      expect(names).toContain("Telegram Bot Token");
-      expect(names).toContain("Discord Bot Token");
-      expect(names).toContain("Git");
-    });
-  });
-
-  describe("fixable issues", () => {
-    it("should include fixId for fixable issues", async () => {
-      const report = await runAllPrerequisiteChecks();
-
-      // Check that results with warnings/errors have fixId where applicable
-      for (const result of report.results) {
-        if (result.name === "Clawdis Config" && result.status === "warning") {
-          expect(result.fixId).toBe("setup-config");
-        }
-        if (result.name === "Agent Workspace" && result.status === "warning") {
-          expect(result.fixId).toBe("setup-workspace");
-        }
-        if (
-          result.name === "WhatsApp Credentials" &&
-          result.status === "warning"
-        ) {
-          expect(result.fixId).toBe("whatsapp-login");
-        }
-        if (result.name === "Anthropic API Key" && result.status === "error") {
-          expect(result.fixId).toBe("anthropic-key");
-        }
-      }
-    });
-  });
-
   describe("runAllPrerequisiteChecks", () => {
-    it("should return results for all checks", async () => {
+    it("should return checks array with results", async () => {
       const report = await runAllPrerequisiteChecks();
 
-      expect(report.results).toHaveLength(PREREQUISITE_CHECKS.length);
-      expect(report.summary).toBeDefined();
-      expect(typeof report.hasErrors).toBe("boolean");
-      expect(typeof report.hasWarnings).toBe("boolean");
+      expect(report.checks).toBeDefined();
+      expect(Array.isArray(report.checks)).toBe(true);
+      expect(report.checks.length).toBeGreaterThan(0);
     });
 
     it("should calculate summary correctly", async () => {
       const report = await runAllPrerequisiteChecks();
 
-      const { ok, warning, error, skipped } = report.summary;
-      const total = ok + warning + error + skipped;
-      expect(total).toBe(report.results.length);
+      const total =
+        report.passed + report.warnings + report.errors + report.skipped;
+      expect(total).toBe(report.checks.length);
     });
 
     it("should include Node.js check with ok status in current environment", async () => {
       const report = await runAllPrerequisiteChecks();
 
-      const nodeResult = report.results.find((r) => r.name === "Node.js");
+      const nodeResult = report.checks.find((r) => r.name === "Node.js");
       expect(nodeResult).toBeDefined();
       expect(nodeResult?.status).toBe("ok");
       expect(nodeResult?.version).toBeDefined();
     });
-  });
 
-  describe("runRequiredPrerequisiteChecks", () => {
-    it("should only run required checks", async () => {
-      const report = await runRequiredPrerequisiteChecks();
-
-      const requiredCount = PREREQUISITE_CHECKS.filter(
-        (c) => c.required,
-      ).length;
-      expect(report.results.length).toBe(requiredCount);
-    });
-
-    it("should not include optional provider checks", async () => {
-      const report = await runRequiredPrerequisiteChecks();
-
-      const names = report.results.map((r) => r.name);
-      expect(names).not.toContain("WhatsApp Credentials");
-      expect(names).not.toContain("Telegram Bot Token");
-      expect(names).not.toContain("Discord Bot Token");
-      expect(names).not.toContain("Git");
-    });
-  });
-
-  describe("individual check results", () => {
-    it("pnpm check should return ok in dev environment", async () => {
+    it("should have allRequiredPassed boolean", async () => {
       const report = await runAllPrerequisiteChecks();
-      const pnpmResult = report.results.find((r) => r.name === "pnpm");
+      expect(typeof report.allRequiredPassed).toBe("boolean");
+    });
+  });
 
-      expect(pnpmResult).toBeDefined();
-      expect(pnpmResult?.status).toBe("ok");
-      expect(pnpmResult?.version).toBeDefined();
+  describe("runAllPrerequisiteChecks with requiredOnly option", () => {
+    it("should only run required checks when requiredOnly is true", async () => {
+      const fullReport = await runAllPrerequisiteChecks();
+      const requiredReport = await runAllPrerequisiteChecks({
+        requiredOnly: true,
+      });
+
+      // Required-only should have fewer checks
+      expect(requiredReport.checks.length).toBeLessThan(fullReport.checks.length);
     });
 
+    it("should not include optional checks", async () => {
+      const report = await runAllPrerequisiteChecks({ requiredOnly: true });
+
+      const names = report.checks.map((r) => r.name);
+      // These are optional checks that should not be included
+      expect(names).not.toContain("pnpm");
+      expect(names).not.toContain("Git");
+      expect(names).not.toContain("FFmpeg");
+      expect(names).not.toContain("Tailscale");
+    });
+  });
+
+  describe("individual check functions", () => {
+    it("checkNode should return ok in dev environment", async () => {
+      const result = await checkNode();
+
+      expect(result.name).toBe("Node.js");
+      expect(result.status).toBe("ok");
+      expect(result.version).toBeDefined();
+      expect(result.required).toBe(true);
+    });
+
+    it("checkPnpm should return ok in dev environment", async () => {
+      const result = await checkPnpm();
+
+      expect(result.name).toBe("pnpm");
+      expect(result.status).toBe("ok");
+      expect(result.version).toBeDefined();
+      expect(result.required).toBe(false);
+    });
+
+    it("checkGit should return result with correct structure", async () => {
+      const result = await checkGit();
+
+      expect(result.name).toBe("Git");
+      expect(result.id).toBe("git");
+      expect(["ok", "warning", "error", "skipped"]).toContain(result.status);
+      expect(result.message).toBeDefined();
+      expect(result.required).toBe(false);
+    });
+  });
+
+  describe("check result structure", () => {
     it("result objects should have required fields", async () => {
       const report = await runAllPrerequisiteChecks();
 
-      for (const result of report.results) {
+      for (const result of report.checks) {
+        expect(result.id).toBeDefined();
         expect(result.name).toBeDefined();
         expect(result.status).toMatch(/^(ok|warning|error|skipped)$/);
         expect(result.message).toBeDefined();
+        expect(typeof result.required).toBe("boolean");
       }
     });
 
-    it("error and warning results should have hints when applicable", async () => {
+    it("error and warning results may have fix hints", async () => {
       const report = await runAllPrerequisiteChecks();
 
-      for (const result of report.results) {
+      for (const result of report.checks) {
         if (result.status === "error" || result.status === "warning") {
-          // Most errors/warnings should have hints, but not strictly required
-          // Just verify structure is valid
+          // fix field is optional but should be string if present
           expect(
-            typeof result.hint === "string" || result.hint === undefined,
+            typeof result.fix === "string" || result.fix === undefined,
           ).toBe(true);
         }
       }

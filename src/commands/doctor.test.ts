@@ -72,19 +72,19 @@ describe("doctorCommand", () => {
 
       expect(logs.length).toBe(1);
       const parsed = JSON.parse(logs[0]);
-      expect(parsed.results).toBeDefined();
-      expect(parsed.summary).toBeDefined();
-      expect(typeof parsed.hasErrors).toBe("boolean");
-      expect(typeof parsed.hasWarnings).toBe("boolean");
+      expect(parsed.checks).toBeDefined();
+      expect(typeof parsed.passed).toBe("number");
+      expect(typeof parsed.errors).toBe("number");
+      expect(typeof parsed.warnings).toBe("number");
     });
 
     it("should include all check results in JSON", async () => {
       await doctorCommand({ json: true }, mockRuntime);
 
       const parsed = JSON.parse(logs[0]);
-      expect(parsed.results.length).toBeGreaterThan(0);
+      expect(parsed.checks.length).toBeGreaterThan(0);
 
-      for (const result of parsed.results) {
+      for (const result of parsed.checks) {
         expect(result.name).toBeDefined();
         expect(result.status).toBeDefined();
         expect(result.message).toBeDefined();
@@ -118,7 +118,7 @@ describe("doctorCommand", () => {
       await doctorCommand({ json: true }, mockRuntime);
 
       const parsed = JSON.parse(logs[0]);
-      if (parsed.hasErrors) {
+      if (parsed.errors > 0) {
         expect(exitCode).toBe(1);
       }
     });

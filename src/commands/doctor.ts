@@ -10,10 +10,9 @@ import readline from "node:readline/promises";
 
 import chalk from "chalk";
 
-import type { FixableIssue } from "../infra/prerequisites.js";
 import {
-  type PrerequisiteResult,
-  type PrerequisitesReport,
+  type PrerequisiteCheckResult,
+  type PrerequisiteCheckSummary,
   runAllPrerequisiteChecks,
 } from "../infra/prerequisites.js";
 import { loginWeb } from "../provider-web.js";
@@ -25,6 +24,23 @@ export interface DoctorOptions {
   json?: boolean;
   verbose?: boolean;
   fix?: boolean;
+}
+
+/** Issues that can be automatically fixed */
+type FixableIssue =
+  | "setup-config"
+  | "setup-workspace"
+  | "whatsapp-login"
+  | "anthropic-key";
+
+/** Map prerequisite IDs to fixable issues */
+function getFixId(id: string): FixableIssue | undefined {
+  const mapping: Record<string, FixableIssue> = {
+    "config-dir": "setup-config",
+    "config-file": "setup-config",
+    workspace: "setup-workspace",
+  };
+  return mapping[id];
 }
 
 const STATUS_ICONS: Record<string, string> = {
@@ -41,7 +57,10 @@ const STATUS_COLORS: Record<string, (s: string) => string> = {
   skipped: chalk.gray,
 };
 
-function formatResult(result: PrerequisiteResult, verbose: boolean): string {
+function formatResult(
+  result: PrerequisiteCheckResult,
+  verbose: boolean,
+): string {
   const icon = STATUS_ICONS[result.status] || "?";
   const color = STATUS_COLORS[result.status] || ((s: string) => s);
   const name = chalk.bold(result.name.padEnd(22));
@@ -52,26 +71,23 @@ function formatResult(result: PrerequisiteResult, verbose: boolean): string {
   if (verbose && result.version) {
     line += chalk.gray(` (v${result.version})`);
   }
-  if (verbose && result.required) {
-    line += chalk.gray(` [requires ${result.required}]`);
-  }
 
   return line;
 }
 
-function formatHint(result: PrerequisiteResult): string | null {
-  if (!result.hint) return null;
-  return chalk.gray(`    └─ ${result.hint}`);
+function formatHint(result: PrerequisiteCheckResult): string | null {
+  if (!result.fix) return null;
+  return chalk.gray(`    └─ ${result.fix}`);
 }
 
-function formatSummary(report: PrerequisitesReport): string {
-  const { ok, warning, error, skipped } = report.summary;
+function formatSummary(report: PrerequisiteCheckSummary): string {
   const parts: string[] = [];
 
-  if (ok > 0) parts.push(chalk.green(`${ok} passed`));
-  if (warning > 0) parts.push(chalk.yellow(`${warning} warnings`));
-  if (error > 0) parts.push(chalk.red(`${error} errors`));
-  if (skipped > 0) parts.push(chalk.gray(`${skipped} skipped`));
+  if (report.passed > 0) parts.push(chalk.green(`${report.passed} passed`));
+  if (report.warnings > 0)
+    parts.push(chalk.yellow(`${report.warnings} warnings`));
+  if (report.errors > 0) parts.push(chalk.red(`${report.errors} errors`));
+  if (report.skipped > 0) parts.push(chalk.gray(`${report.skipped} skipped`));
 
   return parts.join(", ");
 }
@@ -199,13 +215,14 @@ async function applyFix(
 }
 
 async function runFixes(
-  report: PrerequisitesReport,
+  report: PrerequisiteCheckSummary,
   runtime: RuntimeEnv,
 ): Promise<number> {
   // Collect fixable issues
-  const fixable = report.results.filter(
-    (r) => r.fixId && (r.status === "error" || r.status === "warning"),
-  );
+  const fixable = report.checks.filter((r) => {
+    const fixId = getFixId(r.id);
+    return fixId && (r.status === "error" || r.status === "warning");
+  });
 
   if (fixable.length === 0) {
     runtime.log(chalk.green("\n  No fixable issues found."));
@@ -217,18 +234,19 @@ async function runFixes(
 
   // Deduplicate fixes (setup-config and setup-workspace are the same fix)
   const seenFixes = new Set<FixableIssue>();
-  const uniqueFixable: PrerequisiteResult[] = [];
+  const uniqueFixable: PrerequisiteCheckResult[] = [];
 
   for (const result of fixable) {
-    if (result.fixId && !seenFixes.has(result.fixId)) {
+    const fixId = getFixId(result.id);
+    if (fixId && !seenFixes.has(fixId)) {
       // Merge setup-config and setup-workspace
-      if (result.fixId === "setup-workspace" && seenFixes.has("setup-config")) {
+      if (fixId === "setup-workspace" && seenFixes.has("setup-config")) {
         continue;
       }
-      if (result.fixId === "setup-config" && seenFixes.has("setup-workspace")) {
+      if (fixId === "setup-config" && seenFixes.has("setup-workspace")) {
         continue;
       }
-      seenFixes.add(result.fixId);
+      seenFixes.add(fixId);
       uniqueFixable.push(result);
     }
   }
@@ -236,24 +254,24 @@ async function runFixes(
   let fixed = 0;
 
   for (const result of uniqueFixable) {
-    const fixId = result.fixId;
+    const fixId = getFixId(result.id);
     if (!fixId) continue;
     const description = FIX_DESCRIPTIONS[fixId];
 
     runtime.log(`  ${chalk.yellow("?")} ${chalk.bold(description)}`);
 
-    const confirm = await promptYesNo(`    Apply this fix?`);
+    const confirm = await promptYesNo("    Apply this fix?");
 
     if (confirm) {
       const success = await applyFix(fixId, runtime);
       if (success) {
-        runtime.log(chalk.green(`    ✓ Fixed!\n`));
+        runtime.log(chalk.green("    ✓ Fixed!\n"));
         fixed++;
       } else {
-        runtime.log(chalk.red(`    ✗ Fix failed.\n`));
+        runtime.log(chalk.red("    ✗ Fix failed.\n"));
       }
     } else {
-      runtime.log(chalk.gray(`    ○ Skipped.\n`));
+      runtime.log(chalk.gray("    ○ Skipped.\n"));
     }
   }
 
@@ -276,7 +294,7 @@ export async function doctorCommand(
   // JSON output mode
   if (json) {
     runtime.log(JSON.stringify(report, null, 2));
-    if (report.hasErrors) {
+    if (report.errors > 0) {
       runtime.exit(1);
     }
     return;
@@ -289,8 +307,8 @@ export async function doctorCommand(
   runtime.log("");
 
   // Group by category
-  const categories = new Map<string, PrerequisiteResult[]>();
-  for (const result of report.results) {
+  const categories = new Map<string, PrerequisiteCheckResult[]>();
+  for (const result of report.checks) {
     const category = getCategoryForResult(result.name);
     if (!categories.has(category)) {
       categories.set(category, []);
@@ -321,7 +339,7 @@ export async function doctorCommand(
   runtime.log(`  ${formatSummary(report)}`);
 
   // Fix mode
-  if (fix && (report.hasErrors || report.hasWarnings)) {
+  if (fix && (report.errors > 0 || report.warnings > 0)) {
     const fixedCount = await runFixes(report, runtime);
 
     if (fixedCount > 0) {
@@ -339,7 +357,7 @@ export async function doctorCommand(
       runtime.log(`  ${formatSummary(newReport)}`);
       runtime.log("");
 
-      if (newReport.hasErrors) {
+      if (newReport.errors > 0) {
         runtime.log(
           chalk.yellow(
             "  Some issues remain. Run 'clawdis doctor --fix' again or fix manually.",
@@ -358,7 +376,7 @@ export async function doctorCommand(
   runtime.log("");
 
   // Exit status
-  if (report.hasErrors) {
+  if (report.errors > 0) {
     if (!fix) {
       runtime.log(
         chalk.yellow(
@@ -374,7 +392,7 @@ export async function doctorCommand(
     );
     runtime.log("");
     runtime.exit(1);
-  } else if (report.hasWarnings) {
+  } else if (report.warnings > 0) {
     if (!fix) {
       runtime.log(
         chalk.gray(
@@ -400,13 +418,12 @@ function getCategoryForResult(name: string): string {
     "Node.js": "Runtime",
     pnpm: "Tools",
     Git: "Tools",
-    "Clawdis Config": "Configuration",
+    FFmpeg: "Tools",
+    Tailscale: "Tools",
+    "Write Permissions": "Runtime",
+    "Config Directory": "Configuration",
+    "Config File": "Configuration",
     "Agent Workspace": "Configuration",
-    "WhatsApp Credentials": "Configuration",
-    "Telegram Bot Token": "Configuration",
-    "Discord Bot Token": "Configuration",
-    "Anthropic API Key": "Configuration",
-    "Network Connectivity": "Network",
   };
   return mapping[name] || "Other";
 }
