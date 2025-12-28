@@ -1,5 +1,6 @@
 import fs from "node:fs/promises";
 import path from "node:path";
+import { stdin, stdout } from "node:process";
 
 import JSON5 from "json5";
 
@@ -11,6 +12,18 @@ import { type ClawdisConfig, CONFIG_PATH_CLAWDIS } from "../config/config.js";
 import { resolveSessionTranscriptsDir } from "../config/sessions.js";
 import type { RuntimeEnv } from "../runtime.js";
 import { defaultRuntime } from "../runtime.js";
+
+import { setupWizardCommand } from "./setup-wizard.js";
+
+/** Options for the setup command */
+export type SetupCommandOptions = {
+  /** Agent workspace directory */
+  workspace?: string;
+  /** Run interactive wizard (default: true for TTY) */
+  wizard?: boolean;
+  /** Run quick non-interactive setup */
+  quick?: boolean;
+};
 
 async function readConfigFileRaw(): Promise<{
   exists: boolean;
@@ -34,10 +47,14 @@ async function writeConfigFile(cfg: ClawdisConfig) {
   await fs.writeFile(CONFIG_PATH_CLAWDIS, json, "utf-8");
 }
 
-export async function setupCommand(
+/**
+ * Quick (non-interactive) setup.
+ * Creates config and workspace with defaults.
+ */
+async function runQuickSetup(
   opts?: { workspace?: string },
   runtime: RuntimeEnv = defaultRuntime,
-) {
+): Promise<void> {
   const desiredWorkspace =
     typeof opts?.workspace === "string" && opts.workspace.trim()
       ? opts.workspace.trim()
@@ -78,4 +95,47 @@ export async function setupCommand(
   const sessionsDir = resolveSessionTranscriptsDir();
   await fs.mkdir(sessionsDir, { recursive: true });
   runtime.log(`Sessions OK: ${sessionsDir}`);
+}
+
+/**
+ * Check if running in a TTY (interactive terminal).
+ */
+function isTTY(): boolean {
+  return Boolean(stdin.isTTY && stdout.isTTY);
+}
+
+/**
+ * Main setup command entry point.
+ *
+ * Behavior:
+ * - --wizard: Force interactive wizard mode
+ * - --quick: Force non-interactive quick setup
+ * - Neither: Use wizard if TTY, otherwise quick
+ */
+export async function setupCommand(
+  opts?: SetupCommandOptions,
+  runtime: RuntimeEnv = defaultRuntime,
+): Promise<void> {
+  // Determine mode
+  const forceWizard = opts?.wizard === true;
+  const forceQuick = opts?.quick === true;
+
+  // --quick takes precedence over --wizard
+  if (forceQuick) {
+    await runQuickSetup({ workspace: opts?.workspace }, runtime);
+    return;
+  }
+
+  // --wizard forces wizard mode
+  if (forceWizard) {
+    await setupWizardCommand({ workspace: opts?.workspace }, runtime);
+    return;
+  }
+
+  // Default: wizard for TTY, quick otherwise
+  if (isTTY()) {
+    await setupWizardCommand({ workspace: opts?.workspace }, runtime);
+  } else {
+    await runQuickSetup({ workspace: opts?.workspace }, runtime);
+  }
 }

@@ -106,10 +106,28 @@ export function buildProgram() {
       "--workspace <dir>",
       "Agent workspace directory (default: ~/clawd; stored as agent.workspace)",
     )
+    .option(
+      "--wizard",
+      "Run interactive setup wizard (default for TTY terminals)",
+    )
+    .option("--quick", "Run quick non-interactive setup (default for non-TTY)")
+    .addHelpText(
+      "after",
+      `
+Examples:
+  clawdis setup                  # interactive wizard (if TTY) or quick setup
+  clawdis setup --wizard         # force interactive wizard mode
+  clawdis setup --quick          # force non-interactive quick setup
+  clawdis setup --workspace ~/my-agent --quick`,
+    )
     .action(async (opts) => {
       try {
         await setupCommand(
-          { workspace: opts.workspace as string | undefined },
+          {
+            workspace: opts.workspace as string | undefined,
+            wizard: Boolean(opts.wizard),
+            quick: Boolean(opts.quick),
+          },
           defaultRuntime,
         );
       } catch (err) {

@@ -1,476 +1,469 @@
 /**
- * Unified prerequisite checking module for Clawdis.
- * Used by install scripts, setup wizard, and `clawdis doctor` command.
+ * Prerequisite checking utilities for Clawdis setup.
+ * Validates that required dependencies and configurations are in place.
  */
 
-import { execSync } from "node:child_process";
+import { exec } from "node:child_process";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import process from "node:process";
+import { promisify } from "node:util";
 
-import { detectRuntime, isAtLeast, parseSemver } from "./runtime-guard.js";
+const execAsync = promisify(exec);
 
+/** Status of a prerequisite check */
 export type PrerequisiteStatus = "ok" | "warning" | "error" | "skipped";
 
-export interface PrerequisiteResult {
+/** Result of a single prerequisite check */
+export type PrerequisiteCheckResult = {
+  /** Unique identifier for this prerequisite */
+  id: string;
+  /** Human-readable name */
   name: string;
+  /** Status of the check */
   status: PrerequisiteStatus;
-  version?: string;
-  required?: string;
+  /** Detailed message */
   message: string;
-  hint?: string;
-  /** If set, this issue can be auto-fixed by calling the corresponding fix function */
-  fixId?: FixableIssue;
-}
-
-/** Identifiers for issues that can be auto-fixed */
-export type FixableIssue =
-  | "setup-config"
-  | "setup-workspace"
-  | "whatsapp-login"
-  | "anthropic-key";
-
-export interface PrerequisiteCheck {
-  name: string;
-  category: "runtime" | "tools" | "credentials" | "network";
+  /** Version string if applicable */
+  version?: string;
+  /** Path to the checked resource if applicable */
+  path?: string;
+  /** Suggested fix if status is warning or error */
+  fix?: string;
+  /** Whether this prerequisite is required (vs optional) */
   required: boolean;
-  check: () => Promise<PrerequisiteResult>;
-}
+};
 
-const MIN_NODE = { major: 22, minor: 0, patch: 0 };
+/** Aggregate result of all prerequisite checks */
+export type PrerequisiteCheckSummary = {
+  /** All individual check results */
+  checks: PrerequisiteCheckResult[];
+  /** Number of checks that passed */
+  passed: number;
+  /** Number of checks with warnings */
+  warnings: number;
+  /** Number of checks that failed */
+  errors: number;
+  /** Number of checks skipped */
+  skipped: number;
+  /** Whether all required checks passed */
+  allRequiredPassed: boolean;
+};
 
-// ─────────────────────────────────────────────────────────────────────────────
-// Individual Checks
-// ─────────────────────────────────────────────────────────────────────────────
-
-async function checkNodeVersion(): Promise<PrerequisiteResult> {
-  const details = detectRuntime();
-  const parsed = parseSemver(details.version);
-  const ok = isAtLeast(parsed, MIN_NODE);
-
-  return {
-    name: "Node.js",
-    status: ok ? "ok" : "error",
-    version: details.version ?? "unknown",
-    required: `>= ${MIN_NODE.major}.${MIN_NODE.minor}.${MIN_NODE.patch}`,
-    message: ok
-      ? `Node.js ${details.version} detected`
-      : `Node.js ${details.version ?? "unknown"} is too old`,
-    hint: ok
-      ? undefined
-      : "Install Node.js 22+: https://nodejs.org/en/download or use nvm/fnm",
-  };
-}
-
-async function checkPnpm(): Promise<PrerequisiteResult> {
+/**
+ * Check if a command exists and get its version.
+ */
+async function checkCommand(
+  command: string,
+  versionFlag = "--version",
+): Promise<{ exists: boolean; version?: string; error?: string }> {
   try {
-    const version = execSync("pnpm --version", { encoding: "utf-8" }).trim();
+    const { stdout, stderr } = await execAsync(`${command} ${versionFlag}`, {
+      timeout: 10000,
+    });
+    const output = stdout || stderr;
+    // Extract version from output (usually first line)
+    const versionMatch = output.match(/(\d+\.\d+(?:\.\d+)?)/);
     return {
-      name: "pnpm",
-      status: "ok",
-      version,
-      message: `pnpm ${version} detected`,
-    };
-  } catch {
-    return {
-      name: "pnpm",
-      status: "error",
-      message: "pnpm not found in PATH",
-      hint: "Install pnpm: npm install -g pnpm or corepack enable",
-    };
-  }
-}
-
-async function checkGit(): Promise<PrerequisiteResult> {
-  try {
-    const version = execSync("git --version", { encoding: "utf-8" })
-      .trim()
-      .replace("git version ", "");
-    return {
-      name: "Git",
-      status: "ok",
-      version,
-      message: `Git ${version} detected`,
-    };
-  } catch {
-    return {
-      name: "Git",
-      status: "warning",
-      message: "Git not found (optional, needed for updates)",
-      hint: "Install Git: https://git-scm.com/downloads",
-    };
-  }
-}
-
-async function checkWhatsAppCredentials(): Promise<PrerequisiteResult> {
-  const credsDir = path.join(os.homedir(), ".clawdis", "credentials");
-  const credsFile = path.join(credsDir, "creds.json");
-
-  try {
-    const stat = fs.statSync(credsFile);
-    if (stat.isFile() && stat.size > 0) {
-      return {
-        name: "WhatsApp Credentials",
-        status: "ok",
-        message: "WhatsApp credentials found",
-      };
-    }
-    return {
-      name: "WhatsApp Credentials",
-      status: "warning",
-      message: "Credentials file exists but is empty",
-      hint: "Run: clawdis login",
-      fixId: "whatsapp-login",
-    };
-  } catch {
-    return {
-      name: "WhatsApp Credentials",
-      status: "warning",
-      message: "No WhatsApp credentials found",
-      hint: "Run: clawdis login (scan QR code with your phone)",
-      fixId: "whatsapp-login",
-    };
-  }
-}
-
-async function checkTelegramToken(): Promise<PrerequisiteResult> {
-  const token =
-    process.env.TELEGRAM_BOT_TOKEN ||
-    process.env.CLAWDIS_TELEGRAM_BOT_TOKEN ||
-    "";
-
-  // Also check config file
-  const configPath = path.join(os.homedir(), ".clawdis", "clawdis.json");
-  let configToken = "";
-  try {
-    const raw = fs.readFileSync(configPath, "utf-8");
-    const config = JSON.parse(raw);
-    configToken = config?.telegram?.botToken || "";
-  } catch {
-    // Config doesn't exist or is invalid
-  }
-
-  const hasToken = Boolean(token || configToken);
-
-  return {
-    name: "Telegram Bot Token",
-    status: hasToken ? "ok" : "skipped",
-    message: hasToken
-      ? "Telegram bot token configured"
-      : "Telegram bot token not set (optional)",
-    hint: hasToken
-      ? undefined
-      : "Set TELEGRAM_BOT_TOKEN env var or telegram.botToken in config",
-  };
-}
-
-async function checkDiscordToken(): Promise<PrerequisiteResult> {
-  const token =
-    process.env.DISCORD_BOT_TOKEN ||
-    process.env.CLAWDIS_DISCORD_BOT_TOKEN ||
-    "";
-
-  // Also check config file
-  const configPath = path.join(os.homedir(), ".clawdis", "clawdis.json");
-  let configToken = "";
-  try {
-    const raw = fs.readFileSync(configPath, "utf-8");
-    const config = JSON.parse(raw);
-    configToken = config?.discord?.botToken || "";
-  } catch {
-    // Config doesn't exist or is invalid
-  }
-
-  const hasToken = Boolean(token || configToken);
-
-  return {
-    name: "Discord Bot Token",
-    status: hasToken ? "ok" : "skipped",
-    message: hasToken
-      ? "Discord bot token configured"
-      : "Discord bot token not set (optional)",
-    hint: hasToken
-      ? undefined
-      : "Set DISCORD_BOT_TOKEN env var or discord.botToken in config",
-  };
-}
-
-async function checkAnthropicKey(): Promise<PrerequisiteResult> {
-  const apiKey = process.env.ANTHROPIC_API_KEY || "";
-
-  // Check for OAuth token in config
-  const configPath = path.join(os.homedir(), ".clawdis", "clawdis.json");
-  let hasOAuth = false;
-  try {
-    const raw = fs.readFileSync(configPath, "utf-8");
-    const config = JSON.parse(raw);
-    hasOAuth = Boolean(config?.agent?.oauth?.accessToken);
-  } catch {
-    // Config doesn't exist or is invalid
-  }
-
-  const hasAuth = Boolean(apiKey || hasOAuth);
-
-  return {
-    name: "Anthropic API Key",
-    status: hasAuth ? "ok" : "error",
-    message: hasAuth
-      ? apiKey
-        ? "ANTHROPIC_API_KEY set"
-        : "OAuth token configured"
-      : "No Anthropic authentication found",
-    hint: hasAuth
-      ? undefined
-      : "Set ANTHROPIC_API_KEY env var or configure OAuth in settings",
-    fixId: hasAuth ? undefined : "anthropic-key",
-  };
-}
-
-async function checkClawdisConfig(): Promise<PrerequisiteResult> {
-  const configPath = path.join(os.homedir(), ".clawdis", "clawdis.json");
-
-  try {
-    const stat = fs.statSync(configPath);
-    if (stat.isFile()) {
-      // Try to parse it
-      const raw = fs.readFileSync(configPath, "utf-8");
-      JSON.parse(raw);
-      return {
-        name: "Clawdis Config",
-        status: "ok",
-        message: `Config found at ${configPath}`,
-      };
-    }
-    return {
-      name: "Clawdis Config",
-      status: "warning",
-      message: "Config file is not a regular file",
-      hint: "Run: clawdis setup",
-      fixId: "setup-config",
+      exists: true,
+      version: versionMatch ? versionMatch[1] : output.trim().split("\n")[0],
     };
   } catch (err) {
-    if ((err as NodeJS.ErrnoException).code === "ENOENT") {
-      return {
-        name: "Clawdis Config",
-        status: "warning",
-        message: "No config file found",
-        hint: "Run: clawdis setup",
-        fixId: "setup-config",
-      };
-    }
     return {
-      name: "Clawdis Config",
+      exists: false,
+      error: err instanceof Error ? err.message : String(err),
+    };
+  }
+}
+
+/**
+ * Check if Node.js is installed and meets minimum version.
+ */
+export async function checkNode(
+  minVersion = "18.0.0",
+): Promise<PrerequisiteCheckResult> {
+  const result = await checkCommand("node");
+
+  if (!result.exists) {
+    return {
+      id: "node",
+      name: "Node.js",
       status: "error",
-      message: "Config file exists but is invalid JSON",
-      hint: "Check syntax in ~/.clawdis/clawdis.json",
+      message: "Node.js is not installed or not in PATH",
+      required: true,
+      fix: "Install Node.js 18+ from https://nodejs.org or via nvm",
     };
   }
-}
 
-async function checkWorkspace(): Promise<PrerequisiteResult> {
-  // Check default workspace location
-  const workspaceDir = path.join(os.homedir(), "clawd");
-  const agentsMd = path.join(workspaceDir, "AGENTS.md");
+  const currentParts = (result.version ?? "0.0.0").split(".").map(Number);
+  const minParts = minVersion.split(".").map(Number);
 
-  try {
-    const stat = fs.statSync(agentsMd);
-    if (stat.isFile()) {
-      return {
-        name: "Agent Workspace",
-        status: "ok",
-        message: `Workspace found at ${workspaceDir}`,
-      };
+  let meetsMin = true;
+  for (let i = 0; i < minParts.length; i++) {
+    const current = currentParts[i] ?? 0;
+    const min = minParts[i] ?? 0;
+    if (current < min) {
+      meetsMin = false;
+      break;
     }
+    if (current > min) break;
+  }
+
+  if (!meetsMin) {
     return {
-      name: "Agent Workspace",
+      id: "node",
+      name: "Node.js",
       status: "warning",
-      message: "Workspace directory exists but AGENTS.md missing",
-      hint: "Run: clawdis setup",
-      fixId: "setup-workspace",
-    };
-  } catch {
-    return {
-      name: "Agent Workspace",
-      status: "warning",
-      message: "No workspace directory found",
-      hint: "Run: clawdis setup (creates ~/clawd with template files)",
-      fixId: "setup-workspace",
+      message: `Node.js ${result.version} is below recommended ${minVersion}`,
+      version: result.version,
+      required: true,
+      fix: `Upgrade Node.js to ${minVersion}+`,
     };
   }
-}
 
-async function checkNetworkConnectivity(): Promise<PrerequisiteResult> {
-  try {
-    // Simple DNS check - doesn't actually make HTTP request
-    const dns = await import("node:dns/promises");
-    await dns.lookup("api.anthropic.com");
-    return {
-      name: "Network Connectivity",
-      status: "ok",
-      message: "Can reach api.anthropic.com",
-    };
-  } catch {
-    return {
-      name: "Network Connectivity",
-      status: "error",
-      message: "Cannot resolve api.anthropic.com",
-      hint: "Check your internet connection and DNS settings",
-    };
-  }
-}
-
-// ─────────────────────────────────────────────────────────────────────────────
-// Exported Check Registry
-// ─────────────────────────────────────────────────────────────────────────────
-
-export const PREREQUISITE_CHECKS: PrerequisiteCheck[] = [
-  // Runtime checks
-  {
+  return {
+    id: "node",
     name: "Node.js",
-    category: "runtime",
+    status: "ok",
+    message: `Node.js ${result.version} installed`,
+    version: result.version,
     required: true,
-    check: checkNodeVersion,
-  },
-  {
+  };
+}
+
+/**
+ * Check if pnpm is installed.
+ */
+export async function checkPnpm(): Promise<PrerequisiteCheckResult> {
+  const result = await checkCommand("pnpm");
+
+  if (!result.exists) {
+    return {
+      id: "pnpm",
+      name: "pnpm",
+      status: "warning",
+      message: "pnpm is not installed (npm/yarn work but pnpm is recommended)",
+      required: false,
+      fix: "Install pnpm: npm install -g pnpm",
+    };
+  }
+
+  return {
+    id: "pnpm",
     name: "pnpm",
-    category: "tools",
-    required: true,
-    check: checkPnpm,
-  },
-  {
+    status: "ok",
+    message: `pnpm ${result.version} installed`,
+    version: result.version,
+    required: false,
+  };
+}
+
+/**
+ * Check if Git is installed.
+ */
+export async function checkGit(): Promise<PrerequisiteCheckResult> {
+  const result = await checkCommand("git");
+
+  if (!result.exists) {
+    return {
+      id: "git",
+      name: "Git",
+      status: "warning",
+      message: "Git is not installed (optional but recommended)",
+      required: false,
+      fix: "Install Git from https://git-scm.com",
+    };
+  }
+
+  return {
+    id: "git",
     name: "Git",
-    category: "tools",
+    status: "ok",
+    message: `Git ${result.version} installed`,
+    version: result.version,
     required: false,
-    check: checkGit,
-  },
+  };
+}
 
-  // Configuration checks
-  {
-    name: "Clawdis Config",
-    category: "credentials",
+/**
+ * Check if the Clawdis config directory exists.
+ */
+export async function checkConfigDir(): Promise<PrerequisiteCheckResult> {
+  const configDir = path.join(os.homedir(), ".clawdis");
+
+  if (!fs.existsSync(configDir)) {
+    return {
+      id: "config-dir",
+      name: "Config Directory",
+      status: "warning",
+      message: "~/.clawdis does not exist (will be created during setup)",
+      path: configDir,
+      required: false,
+    };
+  }
+
+  return {
+    id: "config-dir",
+    name: "Config Directory",
+    status: "ok",
+    message: "~/.clawdis exists",
+    path: configDir,
     required: false,
-    check: checkClawdisConfig,
-  },
-  {
+  };
+}
+
+/**
+ * Check if a config file exists.
+ */
+export async function checkConfigFile(): Promise<PrerequisiteCheckResult> {
+  const configPath = path.join(os.homedir(), ".clawdis", "clawdis.json");
+
+  if (!fs.existsSync(configPath)) {
+    return {
+      id: "config-file",
+      name: "Config File",
+      status: "warning",
+      message: "clawdis.json does not exist (will be created during setup)",
+      path: configPath,
+      required: false,
+    };
+  }
+
+  try {
+    const content = fs.readFileSync(configPath, "utf-8");
+    JSON.parse(content);
+    return {
+      id: "config-file",
+      name: "Config File",
+      status: "ok",
+      message: "clawdis.json exists and is valid JSON",
+      path: configPath,
+      required: false,
+    };
+  } catch {
+    return {
+      id: "config-file",
+      name: "Config File",
+      status: "error",
+      message: "clawdis.json exists but contains invalid JSON",
+      path: configPath,
+      required: false,
+      fix: "Fix or delete ~/.clawdis/clawdis.json",
+    };
+  }
+}
+
+/**
+ * Check if the agent workspace exists.
+ */
+export async function checkWorkspace(
+  workspacePath?: string,
+): Promise<PrerequisiteCheckResult> {
+  const workspace = workspacePath ?? path.join(os.homedir(), "clawd");
+
+  if (!fs.existsSync(workspace)) {
+    return {
+      id: "workspace",
+      name: "Agent Workspace",
+      status: "warning",
+      message: `${workspace} does not exist (will be created during setup)`,
+      path: workspace,
+      required: false,
+    };
+  }
+
+  const agentsPath = path.join(workspace, "AGENTS.md");
+  if (!fs.existsSync(agentsPath)) {
+    return {
+      id: "workspace",
+      name: "Agent Workspace",
+      status: "warning",
+      message: `${workspace} exists but AGENTS.md is missing`,
+      path: workspace,
+      required: false,
+      fix: "Run setup to create bootstrap files",
+    };
+  }
+
+  return {
+    id: "workspace",
     name: "Agent Workspace",
-    category: "credentials",
+    status: "ok",
+    message: `${workspace} is configured`,
+    path: workspace,
     required: false,
-    check: checkWorkspace,
-  },
-
-  // Provider credentials
-  {
-    name: "WhatsApp Credentials",
-    category: "credentials",
-    required: false,
-    check: checkWhatsAppCredentials,
-  },
-  {
-    name: "Telegram Bot Token",
-    category: "credentials",
-    required: false,
-    check: checkTelegramToken,
-  },
-  {
-    name: "Discord Bot Token",
-    category: "credentials",
-    required: false,
-    check: checkDiscordToken,
-  },
-
-  // API keys
-  {
-    name: "Anthropic API Key",
-    category: "credentials",
-    required: true,
-    check: checkAnthropicKey,
-  },
-
-  // Network
-  {
-    name: "Network Connectivity",
-    category: "network",
-    required: true,
-    check: checkNetworkConnectivity,
-  },
-];
-
-// ─────────────────────────────────────────────────────────────────────────────
-// Main Runner
-// ─────────────────────────────────────────────────────────────────────────────
-
-export interface PrerequisitesReport {
-  results: PrerequisiteResult[];
-  hasErrors: boolean;
-  hasWarnings: boolean;
-  summary: {
-    ok: number;
-    warning: number;
-    error: number;
-    skipped: number;
   };
 }
 
-export async function runAllPrerequisiteChecks(): Promise<PrerequisitesReport> {
-  const results: PrerequisiteResult[] = [];
+/**
+ * Check if ffmpeg is installed (required for media processing).
+ */
+export async function checkFfmpeg(): Promise<PrerequisiteCheckResult> {
+  const result = await checkCommand("ffmpeg");
 
-  for (const check of PREREQUISITE_CHECKS) {
-    try {
-      const result = await check.check();
-      results.push(result);
-    } catch (err) {
-      results.push({
-        name: check.name,
-        status: "error",
-        message: `Check failed: ${(err as Error).message}`,
-      });
-    }
+  if (!result.exists) {
+    return {
+      id: "ffmpeg",
+      name: "FFmpeg",
+      status: "warning",
+      message: "ffmpeg is not installed (required for audio/video processing)",
+      required: false,
+      fix: "Install ffmpeg: brew install ffmpeg (macOS) or apt install ffmpeg (Linux)",
+    };
   }
 
-  const summary = {
-    ok: results.filter((r) => r.status === "ok").length,
-    warning: results.filter((r) => r.status === "warning").length,
-    error: results.filter((r) => r.status === "error").length,
-    skipped: results.filter((r) => r.status === "skipped").length,
-  };
-
   return {
-    results,
-    hasErrors: summary.error > 0,
-    hasWarnings: summary.warning > 0,
-    summary,
+    id: "ffmpeg",
+    name: "FFmpeg",
+    status: "ok",
+    message: `ffmpeg ${result.version} installed`,
+    version: result.version,
+    required: false,
   };
 }
 
-export async function runRequiredPrerequisiteChecks(): Promise<PrerequisitesReport> {
-  const requiredChecks = PREREQUISITE_CHECKS.filter((c) => c.required);
-  const results: PrerequisiteResult[] = [];
+/**
+ * Check if Tailscale is installed (optional for remote access).
+ */
+export async function checkTailscale(): Promise<PrerequisiteCheckResult> {
+  const result = await checkCommand("tailscale");
 
-  for (const check of requiredChecks) {
-    try {
-      const result = await check.check();
-      results.push(result);
-    } catch (err) {
-      results.push({
-        name: check.name,
-        status: "error",
-        message: `Check failed: ${(err as Error).message}`,
-      });
+  if (!result.exists) {
+    return {
+      id: "tailscale",
+      name: "Tailscale",
+      status: "skipped",
+      message: "Tailscale is not installed (optional for remote access)",
+      required: false,
+    };
+  }
+
+  return {
+    id: "tailscale",
+    name: "Tailscale",
+    status: "ok",
+    message: `Tailscale ${result.version} installed`,
+    version: result.version,
+    required: false,
+  };
+}
+
+/**
+ * Check write permissions for key directories.
+ */
+export async function checkPermissions(): Promise<PrerequisiteCheckResult> {
+  const homeDir = os.homedir();
+  const testDir = path.join(homeDir, ".clawdis");
+  const testFile = path.join(testDir, ".permission-test");
+
+  try {
+    // Ensure directory exists
+    if (!fs.existsSync(testDir)) {
+      fs.mkdirSync(testDir, { recursive: true });
+    }
+
+    // Try to write a test file
+    fs.writeFileSync(testFile, "test", "utf-8");
+    fs.unlinkSync(testFile);
+
+    return {
+      id: "permissions",
+      name: "Write Permissions",
+      status: "ok",
+      message: "Write access to ~/.clawdis confirmed",
+      path: testDir,
+      required: true,
+    };
+  } catch (err) {
+    return {
+      id: "permissions",
+      name: "Write Permissions",
+      status: "error",
+      message: `Cannot write to ~/.clawdis: ${err instanceof Error ? err.message : String(err)}`,
+      path: testDir,
+      required: true,
+      fix: "Check file permissions for your home directory",
+    };
+  }
+}
+
+/**
+ * Run all prerequisite checks and return a summary.
+ */
+export async function runAllPrerequisiteChecks(options?: {
+  /** Skip optional checks */
+  requiredOnly?: boolean;
+  /** Custom workspace path to check */
+  workspacePath?: string;
+}): Promise<PrerequisiteCheckSummary> {
+  const checks: PrerequisiteCheckResult[] = [];
+
+  // Always run required checks
+  checks.push(await checkNode());
+  checks.push(await checkPermissions());
+
+  // Run optional checks unless skipped
+  if (!options?.requiredOnly) {
+    checks.push(await checkPnpm());
+    checks.push(await checkGit());
+    checks.push(await checkConfigDir());
+    checks.push(await checkConfigFile());
+    checks.push(await checkWorkspace(options?.workspacePath));
+    checks.push(await checkFfmpeg());
+    checks.push(await checkTailscale());
+  }
+
+  // Calculate summary
+  let passed = 0;
+  let warnings = 0;
+  let errors = 0;
+  let skipped = 0;
+  let allRequiredPassed = true;
+
+  for (const check of checks) {
+    switch (check.status) {
+      case "ok":
+        passed++;
+        break;
+      case "warning":
+        warnings++;
+        break;
+      case "error":
+        errors++;
+        if (check.required) {
+          allRequiredPassed = false;
+        }
+        break;
+      case "skipped":
+        skipped++;
+        break;
     }
   }
 
-  const summary = {
-    ok: results.filter((r) => r.status === "ok").length,
-    warning: results.filter((r) => r.status === "warning").length,
-    error: results.filter((r) => r.status === "error").length,
-    skipped: results.filter((r) => r.status === "skipped").length,
-  };
-
   return {
-    results,
-    hasErrors: summary.error > 0,
-    hasWarnings: summary.warning > 0,
-    summary,
+    checks,
+    passed,
+    warnings,
+    errors,
+    skipped,
+    allRequiredPassed,
   };
+}
+
+/**
+ * Format a check result for console output.
+ */
+export function formatCheckResult(check: PrerequisiteCheckResult): string {
+  const statusIcon = {
+    ok: "[OK]",
+    warning: "[!]",
+    error: "[X]",
+    skipped: "[-]",
+  }[check.status];
+
+  let line = `  ${statusIcon} ${check.name}: ${check.message}`;
+  if (check.fix && check.status !== "ok") {
+    line += `\n      Fix: ${check.fix}`;
+  }
+  return line;
 }
