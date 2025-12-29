@@ -190,10 +190,13 @@ function normalizeToolParameters(tool: AnyAgentTool): AnyAgentTool {
             .map(([key]) => key)
         : undefined;
 
+  // Destructure to exclude anyOf/oneOf/allOf from the flattened schema
+  const { anyOf: _anyOf, oneOf: _oneOf, allOf: _allOf, ...restSchema } = schema;
+
   return {
     ...tool,
     parameters: {
-      ...schema,
+      ...restSchema,
       type: "object",
       properties:
         Object.keys(mergedProperties).length > 0

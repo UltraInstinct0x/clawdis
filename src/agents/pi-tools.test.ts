@@ -2,16 +2,24 @@ import { describe, expect, it } from "vitest";
 import { createClawdisCodingTools } from "./pi-tools.js";
 
 describe("createClawdisCodingTools", () => {
-  it("merges properties for union tool schemas", () => {
+  it("merges properties for union tool schemas and removes anyOf", () => {
     const tools = createClawdisCodingTools();
     const browser = tools.find((tool) => tool.name === "clawdis_browser");
     expect(browser).toBeDefined();
     const parameters = browser?.parameters as {
       anyOf?: unknown[];
+      oneOf?: unknown[];
+      allOf?: unknown[];
+      type?: string;
       properties?: Record<string, unknown>;
       required?: string[];
     };
-    expect(parameters.anyOf?.length ?? 0).toBeGreaterThan(0);
+    // anyOf/oneOf/allOf should be removed after normalization (Anthropic doesn't support them at top level)
+    expect(parameters.anyOf).toBeUndefined();
+    expect(parameters.oneOf).toBeUndefined();
+    expect(parameters.allOf).toBeUndefined();
+    // Schema should be flattened to a regular object type with merged properties
+    expect(parameters.type).toBe("object");
     expect(parameters.properties?.action).toBeDefined();
     expect(parameters.properties?.controlUrl).toBeDefined();
     expect(parameters.properties?.targetUrl).toBeDefined();
@@ -19,57 +27,42 @@ describe("createClawdisCodingTools", () => {
     expect(parameters.required ?? []).toContain("action");
   });
 
-  it("preserves union action values in merged schema", () => {
+  it("flattens all clawdis tools to remove anyOf/oneOf/allOf", () => {
     const tools = createClawdisCodingTools();
-    const toolNames = tools
-      .filter((tool) => tool.name.startsWith("clawdis_"))
-      .map((tool) => tool.name);
+    const clawdisTools = tools.filter((tool) =>
+      tool.name.startsWith("clawdis_"),
+    );
 
-    for (const name of toolNames) {
-      const tool = tools.find((candidate) => candidate.name === name);
-      expect(tool).toBeDefined();
-      const parameters = tool?.parameters as {
-        anyOf?: Array<{ properties?: Record<string, unknown> }>;
+    // All clawdis tools should have anyOf/oneOf/allOf removed
+    for (const tool of clawdisTools) {
+      const parameters = tool.parameters as {
+        anyOf?: unknown[];
+        oneOf?: unknown[];
+        allOf?: unknown[];
+        type?: string;
         properties?: Record<string, unknown>;
       };
-      if (!Array.isArray(parameters.anyOf) || parameters.anyOf.length === 0) {
-        continue;
-      }
-      const actionValues = new Set<string>();
-      for (const variant of parameters.anyOf ?? []) {
-        const action = variant?.properties?.action as
-          | { const?: unknown; enum?: unknown[] }
-          | undefined;
-        if (typeof action?.const === "string") actionValues.add(action.const);
-        if (Array.isArray(action?.enum)) {
-          for (const value of action.enum) {
-            if (typeof value === "string") actionValues.add(value);
-          }
-        }
-      }
-
-      if (actionValues.size <= 1) {
-        continue;
-      }
-      const mergedAction = parameters.properties?.action as
-        | { const?: unknown; enum?: unknown[] }
-        | undefined;
-      const mergedValues = new Set<string>();
-      if (typeof mergedAction?.const === "string") {
-        mergedValues.add(mergedAction.const);
-      }
-      if (Array.isArray(mergedAction?.enum)) {
-        for (const value of mergedAction.enum) {
-          if (typeof value === "string") mergedValues.add(value);
-        }
-      }
-
-      expect(actionValues.size).toBeGreaterThan(1);
-      expect(mergedValues.size).toBe(actionValues.size);
-      for (const value of actionValues) {
-        expect(mergedValues.has(value)).toBe(true);
-      }
+      expect(parameters.anyOf).toBeUndefined();
+      expect(parameters.oneOf).toBeUndefined();
+      expect(parameters.allOf).toBeUndefined();
+      expect(parameters.type).toBe("object");
+      expect(parameters.properties).toBeDefined();
     }
+
+    // Verify action enum values are preserved in merged schema for browser tool
+    const browser = clawdisTools.find(
+      (tool) => tool.name === "clawdis_browser",
+    );
+    expect(browser).toBeDefined();
+    const browserParams = browser?.parameters as {
+      properties?: Record<string, { enum?: string[] }>;
+    };
+    const actionEnum = browserParams.properties?.action?.enum ?? [];
+    expect(actionEnum).toContain("status");
+    expect(actionEnum).toContain("start");
+    expect(actionEnum).toContain("stop");
+    expect(actionEnum).toContain("tabs");
+    expect(actionEnum).toContain("open");
   });
 
   it("includes bash and process tools", () => {
